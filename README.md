@@ -741,7 +741,7 @@ Core dependencies (pinned versions in `requirements.txt`):
 |---|---|---|
 | `torch` | 2.4.0 | Deep learning framework |
 | `torchvision` | 0.19.0 | Image utilities |
-| `timm` | 1.0.8 | SegFormer (MiT-B0) backbone |
+| `timm` | 0.9.16 | SegFormer (MiT-B0) backbone |
 | `segmentation-models-pytorch` | 0.3.3 | Baseline model builders |
 | `opencv-python-headless` | 4.10.0.84 | Image I/O and processing |
 | `albumentations` | 1.4.14 | Training augmentations |
