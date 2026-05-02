@@ -1,455 +1,325 @@
-# CrackGraphAI: Production-Grade Crack Segmentation and Structural Analysis
+﻿# CrackGraphAI
 
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
-[![Docker](https://img.shields.io/badge/docker-ready-2496ED.svg)](https://docker.com/)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+**Production-grade crack segmentation and structural integrity analysis powered by a hybrid CNN–Transformer architecture.**
 
-**CrackGraphAI** is an end-to-end deep learning pipeline for automated crack detection and structural integrity assessment in infrastructure images. It combines state-of-the-art computer vision techniques with graph-based structural analysis to provide comprehensive crack characterization.
+CrackGraphAI detects cracks in surface images, skeletonises them into a topological graph, and produces a calibrated **Structural Integrity (SI) score** with a five-level risk classification — all through a single REST API call.
 
-## Pipeline Overview
-
-```
-Input Image
-    ↓
-Preprocessing (Resize, Normalize, Augment)
-    ↓
-Hybrid CNN+Transformer Segmentation (ResNet34 + SegFormer)
-    ↓
-Topology-Constrained Learning (Dice + BCE + Topology Loss)
-    ↓
-Skeletonization (Morphological Thinning)
-    ↓
-Graph Modeling (NetworkX Conversion)
-    ↓
-Structural Feature Extraction
-    ↓
-Structural Integrity (SI) Score Calculation
-```
-
-## Key Features
-
-- **Hybrid Architecture**: Combines ResNet CNN with SegFormer transformer for superior segmentation
-- **Topology-Aware Training**: Custom loss function preserving crack connectivity
-- **Graph-Based Analysis**: Converts cracks to graph structures for topological analysis
-- **Production-Ready API**: FastAPI backend with rate limiting, auth, and monitoring
-- **Modern UI**: Interactive Streamlit dashboard with real-time visualizations
-- **Docker Support**: Containerized deployment with GPU support
-- **Model Export**: TorchScript and ONNX export for edge deployment
-- **Comprehensive Metrics**: IoU, Dice, Precision, Recall, Connectivity, SI Score
+---
 
 ## Table of Contents
 
-- [Installation](#installation)
-- [Quick Start](#quick-start)
+- [Overview](#overview)
+- [Key Features](#key-features)
+- [Architecture](#architecture)
+  - [Model: HybridSegformerUNet](#model-hybridsegformerunet)
+  - [Inference Pipeline](#inference-pipeline)
+  - [Structural Integrity Scoring](#structural-integrity-scoring)
 - [Project Structure](#project-structure)
-- [Dataset Setup](#dataset-setup)
-- [Training](#training)
-- [Inference](#inference)
-- [API & UI](#api--ui)
-- [Deployment](#deployment)
+- [Quick Start](#quick-start)
+  - [Prerequisites](#prerequisites)
+  - [Local Development](#local-development)
+  - [Docker (Recommended)](#docker-recommended)
 - [Configuration](#configuration)
-- [Architecture Details](#architecture-details)
 - [API Reference](#api-reference)
-- [Monitoring & Metrics](#monitoring--metrics)
-- [Development](#development)
-- [Troubleshooting](#troubleshooting)
+  - [Authentication](#authentication)
+  - [Endpoints](#endpoints)
+  - [Response Schema](#response-schema)
+- [Training](#training)
+  - [Dataset](#dataset)
+  - [Train a Model](#train-a-model)
+  - [Baseline Comparison](#baseline-comparison)
+  - [Export Model](#export-model)
+- [Web UI](#web-ui)
+- [Database](#database)
+- [Monitoring](#monitoring)
+- [Production Deployment](#production-deployment)
+  - [Environment Variables](#environment-variables)
+  - [Docker Compose (Full Stack)](#docker-compose-full-stack)
+  - [Security Checklist](#security-checklist)
+- [CI/CD](#cicd)
+- [Testing](#testing)
+- [Risk Classification](#risk-classification)
+- [Requirements](#requirements)
+- [Contributing](#contributing)
+- [License](#license)
 
-## Installation
+---
 
-### Prerequisites
+## Overview
 
-- Python 3.8 or higher
-- CUDA-capable GPU (recommended) or CPU
-- Docker (optional, for containerized deployment)
+CrackGraphAI is an end-to-end system for automated structural crack analysis. Given a photo of a concrete surface, pavement, wall, or any structure, it:
 
-### Setup
+1. **Segments** crack pixels using a hybrid deep learning model
+2. **Post-processes** the mask to remove non-crack noise (blobs, isolated dots)
+3. **Skeletonises** the mask into a 1-pixel-wide topological representation
+4. **Builds a graph** of the crack network (nodes = pixels, edges = connectivity)
+5. **Extracts features** — crack density, branching, junctions, endpoints, width
+6. **Computes an SI score** (0.0 = failure imminent → 1.0 = healthy) with a risk level
+7. **Returns** all of the above as a structured JSON response with base64-encoded PNG overlays
 
-1. **Clone the repository:**
-```bash
-git clone https://github.com/yourusername/CrackGraphAI.git
-cd CrackGraphAI
+---
+
+## Key Features
+
+- **Hybrid CNN + Transformer model** — ResNet34 encoder fused with SegFormer (MiT-B0) for both local texture and global context
+- **Test-Time Augmentation (TTA)** — averages predictions over original + horizontal + vertical flips for robustness
+- **Topology-aware training loss** — Dice + BCE + differentiable skeleton loss to preserve crack connectivity
+- **Structural Integrity scoring** — physics-inspired, four-component damage model with calibrated thresholds
+- **Graph-based crack analysis** — NetworkX graph with branch counting, junction detection, longest path, diameter
+- **CLAHE preprocessing** — contrast-limited adaptive histogram equalisation for dark/low-contrast surfaces
+- **Morphological post-processing** — removes blob artefacts while preserving fine crack tips
+- **Production FastAPI** — rate limiting, Bearer auth, Prometheus metrics, request IDs, 30 s timeout
+- **ONNX + TorchScript export** — deploy without PyTorch runtime
+- **Full observability stack** — Prometheus + Grafana + Node Exporter
+- **PostgreSQL database** — stores predictions, metrics, and analysis history
+- **Redis caching** — optional distributed result cache
+- **Nginx reverse proxy** — TLS termination, gzip, rate limiting at the edge
+- **GitHub Actions CI/CD** — test → build → security scan → deploy pipeline
+
+---
+
+## Architecture
+
+### Model: HybridSegformerUNet
+
+```
+Input (3 × 256 × 256)
+        │
+        ├──────────────────────────────────────────────┐
+        │  ResNet34 Encoder                            │  SegFormer MiT-B0
+        │  s0: H/2  (64 ch)                            │  (timm, pretrained)
+        │  s1: H/4  (64 ch)                            │  out: H/8 (256 ch)
+        │  s2: H/8  (128 ch)                           │
+        │  s3: H/16 (256 ch)                           │
+        │  s4: H/32 (512 ch)  ─────────────────────────┤
+        │                                              │
+        │              Fusion (ConvBNReLU 1×1 → 512)  │
+        │                         │                   │
+        └─────────────────────────┘                   │
+                                  │                   │
+                    Decoder (4 × DecoderBlock)         │
+                    dec4: H/16 (256 ch)                │
+                    dec3: H/8  (128 ch)                │
+                    dec2: H/4  (64 ch)                 │
+                    dec1: H/2  (32 ch)                 │
+                                  │
+                    Head (Conv 1×1) + Bilinear upsample
+                                  │
+                    Output (1 × 256 × 256) — logits
 ```
 
-2. **Create virtual environment:**
-```bash
-python -m venv .venv
+The transformer branch processes the full input image and its output is aligned to the deepest CNN feature map before fusion. A `TransformerBottleneck` fallback is used automatically if the timm SegFormer weights are unavailable.
 
-# Windows:
-.venv\Scripts\activate
-
-# Linux/Mac:
-source .venv/bin/activate
-```
-
-3. **Install dependencies:**
-```bash
-pip install -r requirements.txt
-```
-
-4. **Configure environment (optional):**
-```bash
-cp .env.example .env
-# Edit .env with your production settings
-```
-
-## Quick Start
-
-### 1. Prepare Dataset
-
-Place your crack segmentation dataset in the following structure:
+### Inference Pipeline
 
 ```
-crack_segmentation_dataset/
-├── images/
-│   ├── image_001.jpg
-│   ├── image_002.jpg
-│   └── ...
-└── masks/
-    ├── image_001.png
-    ├── image_002.png
-    └── ...
+Raw bytes
+   → cv2 decode
+   → Resize to 256×256
+   → CLAHE (LAB L-channel)
+   → ImageNet normalise
+   → Model forward (+ TTA: hflip, vflip)
+   → Sigmoid threshold (0.35)
+   → Morphological post-processing
+       • Opening (2×2 ellipse) — removes salt-and-pepper noise
+       • Connected-component filter — keeps elongated / thin / small regions
+       • Closing (3×3 ellipse) — reconnects nearby segments
+   → Skeletonize (scikit-image)
+   → skeleton_to_graph (8-connectivity NetworkX graph)
+   → extract_structural_features
+   → compute_structural_integrity (SI score)
+   → Encode outputs as base64 PNG
+   → Return JSON
 ```
 
-### 2. Train the Model
+### Structural Integrity Scoring
 
-```bash
-# Train the hybrid model (recommended)
-python scripts/train.py --config configs/config.yaml --model hybrid
+SI is defined as `1.0 − Damage`, where Damage is a weighted sum of four normalised components:
 
-# Train baseline models for comparison
-python scripts/train.py --config configs/config.yaml --model unetpp
-python scripts/train.py --config configs/config.yaml --model deeplabv3plus
-python scripts/train.py --config configs/config.yaml --model segformer
-```
+| Component | Weight | Description |
+|---|---|---|
+| Crack Density | 0.35 | Skeleton pixels / image area, normalised at 3% coverage = severe |
+| Network Density | 0.25 | Junctions per 100 skeleton pixels (branching severity) |
+| Complexity | 0.25 | Branches + 2×junctions, with endpoint-activity bonus |
+| Crack Width | 0.15 | Mean half-width via distance transform, normalised by image diagonal |
 
-### 3. Run Inference
+When a ground-truth mask is available (training/evaluation), a fifth **Segmentation Quality** component (Dice + exp(−BCE)) is added and weights are redistributed automatically.
 
-```bash
-python scripts/infer.py \
-    --config configs/config.yaml \
-    --weights checkpoints/best_hybrid_segformer.pth \
-    --image path/to/image.jpg \
-    --output-dir outputs
-```
-
-### 4. Start API Server
-
-```bash
-uvicorn api.main:app --host 0.0.0.0 --port 8000
-```
-
-### 5. Launch Streamlit UI
-
-```bash
-streamlit run ui/streamlit_app.py
-```
-
-Open http://localhost:8501 in your browser.
+---
 
 ## Project Structure
 
 ```
 CrackGraphAI/
-├── api/                      # FastAPI production server
-│   └── main.py              # API endpoints and inference service
-├── configs/                  # Configuration files
-│   └── config.yaml          # Main configuration
-├── data/                     # Data loading and preprocessing
-│   └── dataset.py           # Dataset class and augmentations
-├── docker-compose.yml        # Docker orchestration
-├── Dockerfile                # Container definition
-├── features/                 # Structural feature extraction
-│   └── structural_features.py
-├── graph/                    # Graph modeling
-│   └── crack_graph.py       # Skeleton-to-graph conversion
-├── losses/                   # Custom loss functions
-│   └── segmentation_losses.py
-├── models/                   # Model architectures
-│   ├── baselines.py         # U-Net++, DeepLabV3+, SegFormer
-│   └── hybrid_segformer_unet.py
-├── scripts/                  # Training and inference scripts
-│   ├── benchmark_models.py
-│   ├── eval_onnx.py
-│   ├── export_model.py
-│   ├── infer.py
-│   └── train.py
-├── tests/                    # Unit tests
-│   ├── test_api.py
-│   └── test_metrics.py
-├── topology/                 # Skeletonization
-│   └── skeleton.py
-├── training/                 # Training loop
-│   └── trainer.py
-├── ui/                       # Streamlit interface
-│   └── streamlit_app.py
-└── utils/                    # Utilities
-    ├── config.py
-    ├── metrics.py
-    └── repro.py
+├── api/
+│   ├── main.py                  # FastAPI app — endpoints, middleware, InferenceService
+│   └── production_main.py       # Production variant
+├── checkpoints/
+│   ├── best_hybrid_segformer.pth  # Trained PyTorch weights
+│   ├── hybrid_segformer.onnx      # ONNX export
+│   └── hybrid_segformer.ts        # TorchScript export
+├── configs/
+│   └── config.yaml              # All hyperparameters and paths
+├── crack_segmentation_dataset/
+│   ├── images/                  # 11 298 training images (CFD + CRACK500)
+│   ├── masks/                   # Corresponding binary masks
+│   └── test/                    # Held-out test split
+├── data/
+│   └── dataset.py               # CrackSegmentationDataset, augmentations, splits
+├── db/
+│   ├── database.py              # SQLAlchemy engine, connection pool, session factory
+│   ├── models.py                # ORM models (predictions, metrics)
+│   ├── repository.py            # CRUD operations
+│   ├── service.py               # Business logic layer
+│   ├── api_integration.py       # FastAPI dependency injection
+│   └── init.sql                 # Schema bootstrap SQL
+├── features/
+│   ├── si_scoring.py            # SI score engine (SIGenerator, FeatureNormalizer)
+│   └── structural_features.py   # Graph feature extraction
+├── graph/
+│   ├── crack_graph.py           # skeleton_to_graph, keypoint detection, overlays
+│   └── enhanced_crack_graph.py  # Extended graph utilities
+├── inference/
+│   ├── engine.py                # Standalone inference engine
+│   ├── preprocessing.py         # Image preprocessing utilities
+│   ├── postprocessing.py        # Mask post-processing
+│   └── cache.py                 # Redis result cache
+├── losses/
+│   └── segmentation_losses.py   # Dice + BCE + TopologyAwareLoss
+├── models/
+│   ├── hybrid_segformer_unet.py # HybridSegformerUNet (main model)
+│   └── baselines.py             # UNet++, DeepLabV3+, SegFormer baselines
+├── monitoring/
+│   ├── prometheus.yml           # Scrape config
+│   ├── alert_rules.yml          # Alerting rules
+│   └── grafana/                 # Dashboard provisioning
+├── nginx/
+│   └── nginx.conf               # Reverse proxy, rate limiting, TLS config
+├── scripts/
+│   ├── train.py                 # Training entry point
+│   ├── infer.py                 # CLI inference with visualisation + Grad-CAM
+│   ├── benchmark_models.py      # Compare all models on test set
+│   ├── export_model.py          # Export to ONNX + TorchScript
+│   ├── eval_onnx.py             # Evaluate ONNX model
+│   ├── optimize_model.py        # Model optimisation utilities
+│   ├── quick_inference.py       # Fast single-image inference
+│   ├── verify_production.py     # Production readiness checks
+│   ├── deploy.sh                # Linux deployment script
+│   └── deploy-windows.ps1       # Windows deployment script
+├── tests/
+│   ├── test_api.py              # FastAPI endpoint tests
+│   ├── test_metrics.py          # Metric computation tests
+│   └── test_si_scoring.py       # SI scoring unit tests
+├── topology/
+│   └── skeleton.py              # mask_to_skeleton, connectivity_score
+├── training/
+│   └── trainer.py               # Trainer (AdamW, CosineAnnealingLR, AMP, early stopping)
+├── ui/
+│   ├── index.html               # Single-page web UI (Tailwind CSS)
+│   └── app.js                   # UI logic — upload, analysis, visualisation, export
+├── utils/
+│   ├── config.py                # YAML config loader
+│   ├── metrics.py               # segmentation_metrics, SI score utilities
+│   └── repro.py                 # Reproducibility (seed setting)
+├── docker-compose.yml           # Development stack
+├── docker-compose.prod.yml      # Production stack (Nginx, Redis, Prometheus, Grafana)
+├── docker-compose.db.yml        # Database-only stack
+├── Dockerfile                   # Development image
+├── Dockerfile.prod              # Production image
+├── requirements.txt             # Pinned Python dependencies
+├── requirements-db.txt          # Database-specific dependencies
+├── configs/config.yaml          # Project configuration
+├── pytest.ini                   # Test configuration
+└── .env.example                 # Environment variable template
 ```
 
-## Dataset Setup
+---
 
-The project expects a standard image segmentation dataset format. You can use public datasets like:
+## Quick Start
 
-- CrackTree (Structural crack dataset)
-- DeepCrack
-- CRACK500
-- Custom datasets
+### Prerequisites
 
-### Dataset Configuration
+- Python 3.10 or 3.11
+- CUDA-capable GPU recommended (CPU inference is supported but slower)
+- Docker + Docker Compose (for containerised deployment)
 
-Update `configs/config.yaml`:
-
-```yaml
-data:
-  root_dir: crack_segmentation_dataset
-  image_dir_name: images
-  mask_dir_name: masks
-  image_size: 256              # Input image size
-  train_ratio: 0.70            # Training split
-  val_ratio: 0.15              # Validation split
-  test_ratio: 0.15             # Test split
-  num_workers: 4               # DataLoader workers
-```
-
-## Training
-
-### Training Configuration
-
-Edit `configs/config.yaml`:
-
-```yaml
-training:
-  batch_size: 8
-  epochs: 80
-  lr: 0.0002                   # Learning rate
-  weight_decay: 0.0001         # AdamW weight decay
-  amp: true                    # Automatic Mixed Precision
-  early_stopping_patience: 12  # Early stopping patience
-  checkpoint_dir: checkpoints
-  best_model_name: best_hybrid_segformer.pth
-  lambda_topology: 0.2         # Topology loss weight
-```
-
-### Model Options
-
-| Model | Architecture | Description |
-|-------|--------------|-------------|
-| `hybrid` | ResNet34 + SegFormer | **Recommended** - Best accuracy |
-| `unetpp` | U-Net++ | Baseline with nested skip connections |
-| `deeplabv3plus` | DeepLabV3+ | Atrous convolution based |
-| `segformer` | SegFormer B0 | Pure transformer encoder |
-
-### Training from Scratch
+### Local Development
 
 ```bash
-python scripts/train.py \
-    --config configs/config.yaml \
-    --model hybrid \
-    --resume  # Optional: resume from checkpoint
-```
+# 1. Clone the repository
+git clone https://github.com/your-org/crackgraphai.git
+cd crackgraphai
 
-### Expected Results
+# 2. Create and activate a virtual environment
+python -m venv venv
+source venv/bin/activate        # Linux/macOS
+venv\Scripts\activate           # Windows
 
-| Model | IoU | Dice | Precision | Recall | SI Score |
-|-------|-----|------|-----------|--------|----------|
-| U-Net++ | ~0.72 | ~0.84 | ~0.78 | ~0.81 | ~0.75 |
-| DeepLabV3+ | ~0.75 | ~0.86 | ~0.80 | ~0.83 | ~0.78 |
-| SegFormer | ~0.78 | ~0.88 | ~0.82 | ~0.85 | ~0.81 |
-| **Hybrid (Final)** | **~0.82** | **~0.90** | **~0.85** | **~0.88** | **~0.85** |
+# 3. Install dependencies
+pip install -r requirements.txt
 
-## Inference
+# 4. Copy and configure environment variables
+cp .env.example .env
+# Edit .env — at minimum set API_KEY
 
-### Single Image Inference
-
-```bash
-python scripts/infer.py \
-    --config configs/config.yaml \
-    --weights checkpoints/best_hybrid_segformer.pth \
-    --image path/to/image.jpg \
-    --output-dir outputs \
-    --visualize
-```
-
-### Batch Inference
-
-```bash
-python scripts/infer.py \
-    --config configs/config.yaml \
-    --weights checkpoints/best_hybrid_segformer.pth \
-    --image-dir path/to/images/ \
-    --output-dir outputs
-```
-
-### Output Files
-
-- `pred_mask.npy` - Binary segmentation mask
-- `skeleton.npy` - Thinned crack skeleton
-- `visualization.png` - Overlay visualization
-- `features.json` - Extracted structural features
-- `si_score.txt` - Structural integrity score
-
-### TTA (Test-Time Augmentation)
-
-Enable in `configs/config.yaml`:
-
-```yaml
-inference:
-  use_tta: true
-  tta_transforms: [none, hflip, vflip]
-```
-
-## API & UI
-
-### FastAPI Production Server
-
-The API provides RESTful endpoints for production deployment.
-
-**Start the server:**
-
-```bash
-# Development
+# 5. Start the API server
 uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 
-# Production
-uvicorn api.main:app --host 0.0.0.0 --port 8000 --workers 1
+# 6. Open the web UI
+# Navigate to http://localhost:8000/docs  (Swagger UI)
+# Or open ui/index.html in a browser pointed at http://localhost:8000
 ```
-
-**Health Check:**
-```bash
-curl http://localhost:8000/health
-```
-
-**Single Prediction:**
-```bash
-curl -X POST "http://localhost:8000/predict" \
-  -F "image=@crack_image.jpg" \
-  -H "Authorization: Bearer your-api-key"
-```
-
-**Batch Prediction:**
-```bash
-curl -X POST "http://localhost:8000/predict_batch" \
-  -F "images=@crack1.jpg" \
-  -F "images=@crack2.jpg" \
-  -H "Authorization: Bearer your-api-key"
-```
-
-### Streamlit Web Interface
-
-The modern React-style dashboard provides:
-- Drag-and-drop image upload
-- Real-time analysis with progress indicators
-- Interactive visualizations with Plotly
-- SI Score gauge charts
-- Feature analysis charts
-- Download results (PNG, JSON)
-- Analysis history tracking
-
-**Launch:**
-```bash
-streamlit run ui/streamlit_app.py
-```
-
-Access at http://localhost:8501
-
-## Deployment
 
 ### Docker (Recommended)
 
-**Build and run:**
 ```bash
-# Basic deployment
+# Development — API only
 docker-compose up -d
 
-# With monitoring stack (Prometheus + Grafana)
+# With monitoring (Prometheus + Grafana)
 docker-compose --profile monitoring up -d
 
 # With Redis caching
 docker-compose --profile cache up -d
+
+# Production full stack
+docker-compose -f docker-compose.prod.yml up -d
 ```
 
-**Manual Docker build:**
-```bash
-docker build -t crackgraphai:latest .
-docker run --gpus all -p 8000:8000 \
-  -v $(pwd)/checkpoints:/app/checkpoints:ro \
-  -e API_KEY=your-secure-key \
-  crackgraphai:latest
-```
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `API_KEY` | `dev-key-change-in-production` | API authentication key |
-| `HOST` | `0.0.0.0` | Server bind address |
-| `PORT` | `8000` | Server port |
-| `LOG_LEVEL` | `INFO` | Logging level |
-| `CONFIG_PATH` | `configs/config.yaml` | Model config path |
-| `WEIGHTS_PATH` | `checkpoints/best_hybrid_segformer.pth` | Model weights |
-| `CUDA_VISIBLE_DEVICES` | `0` | GPU device selection |
-| `REDIS_URL` | - | Optional Redis cache |
-| `DATABASE_URL` | - | Optional PostgreSQL storage |
-
-### Kubernetes
-
-Apply the provided manifests:
+Verify the service is healthy:
 
 ```bash
-kubectl apply -f k8s/
-
-# Or use Helm
-helm install crackgraphai ./helm-chart
+curl http://localhost:8000/health
+# {"status":"healthy","model_loaded":true,"device":"cuda:0","version":"1.2.0"}
 ```
 
-### Model Export for Edge Deployment
-
-Export to production formats:
-
-```bash
-python scripts/export_model.py \
-    --config configs/config.yaml \
-    --weights checkpoints/best_hybrid_segformer.pth
-```
-
-Outputs:
-- `checkpoints/hybrid_segformer.ts` - TorchScript (PyTorch runtime)
-- `checkpoints/hybrid_segformer.onnx` - ONNX (cross-platform)
-
-**Run ONNX inference:**
-```bash
-python scripts/eval_onnx.py \
-    --onnx checkpoints/hybrid_segformer.onnx \
-    --image path/to/image.jpg
-```
+---
 
 ## Configuration
 
-The project uses a centralized YAML configuration in `configs/config.yaml`:
+All settings live in `configs/config.yaml`:
 
 ```yaml
 project:
   name: crackgraphai
-  seed: 42                     # Reproducibility seed
+  seed: 42
 
 data:
   root_dir: crack_segmentation_dataset
-  image_size: 256
+  image_size: 256          # model input resolution
   train_ratio: 0.70
   val_ratio: 0.15
   test_ratio: 0.15
+  num_workers: 4
 
 training:
   batch_size: 8
   epochs: 80
   lr: 0.0002
   weight_decay: 0.0001
-  amp: true                    # Mixed precision training
+  amp: true                # mixed-precision training
   early_stopping_patience: 12
+  lambda_topology: 0.2     # weight of topology loss term
 
 model:
   architecture: hybrid_segformer_unet
@@ -460,8 +330,8 @@ model:
   decoder_channels: [256, 128, 64, 32]
 
 inference:
-  threshold: 0.5
-  use_tta: true                # Test-time augmentation
+  threshold: 0.35          # sigmoid threshold for binary mask
+  use_tta: true
   tta_transforms: [none, hflip, vflip]
 
 si_score:
@@ -472,620 +342,434 @@ si_score:
     branch_consistency: 0.20
 ```
 
-## Architecture Details
-
-### Hybrid CNN+Transformer Architecture
-
-The core innovation of CrackGraphAI is the **HybridSegformerUNet** (`models/hybrid_segformer_unet.py:87`), which combines the strengths of CNNs (local feature extraction) and Transformers (global context modeling).
-
-```
-Input (3×256×256)
-    ↓
-┌─────────────────────────┐     ┌─────────────────────────┐
-│     CNN BRANCH          │     │   TRANSFORMER BRANCH    │
-│     (ResNet34)          │     │   (SegFormer B0)        │
-│                         │     │                         │
-│  Input: 3×256×256       │     │  Input: 3×256×256       │
-│  s0: 64×128×128  ───────┼─────┼─────────────────────────┤
-│  s1: 64×64×64    ───────┼─────┼─────────────────────────┤
-│  s2: 128×32×32   ───────┼─────┼─────────────────────────┤
-│  s3: 256×16×16   ───────┼─────┼─────────────────────────┤
-│  s4: 512×8×8     ───────┼─────┼────────────────────► tf: 512×8×8
-└────────┬────────────────┘     └────────┬────────────────┘
-         │                               │
-         │    ┌──────────────────────────┘
-         │    │
-         ▼    ▼
-    ┌─────────────────────────────────────────┐
-    │  FEATURE FUSION (Concat + 1×1 Conv)     │
-    │  Input: s4 (512) + tf (512) = 1024     │
-    │  Output: 512×8×8                       │
-    └──────────────────┬────────────────────┘
-                       │
-    ┌──────────────────▼────────────────────┐
-    │         U-Net DECODER                 │
-    │  dec4: 512→256 (w/ skip s3) → 16×16  │
-    │  dec3: 256→128 (w/ skip s2) → 32×32  │
-    │  dec2: 128→64  (w/ skip s1) → 64×64  │
-    │  dec1: 64→32   (w/ skip s0) → 128×128 │
-    └──────────────────┬────────────────────┘
-                       │
-    ┌──────────────────▼────────────────────┐
-    │     OUTPUT HEAD (1×1 Conv)           │
-    │     32 channels → 1 channel           │
-    │     Bilinear upsample 2× → 256×256    │
-    └───────────────────────────────────────┘
-```
-
-#### Why This Architecture Works for Crack Detection
-
-**CNN Branch (ResNet34):**
-- **Local feature extraction**: Detects fine crack details, edges, and textures
-- **Hierarchical features**: Skip connections preserve multi-scale crack information
-- **Proven backbone**: ResNet34 provides stable gradients and fast convergence
-
-**Transformer Branch (SegFormer B0):**
-- **Global context**: Self-attention captures long-range dependencies between crack segments
-- **Position-independent**: Better at handling disconnected crack parts
-- **Efficient**: Mix-Transformer (MiT) design reduces computational cost vs ViT
-
-**Fusion Strategy:**
-- Concatenation at bottleneck (8×8 resolution) combines high-level CNN features with transformer context
-- Skip connections preserve spatial precision from early CNN layers
-- Decoder progressively upsamples while maintaining crack connectivity
-
-### Structural Integrity Score (SI Score)
-
-The SI Score (`utils/metrics.py`) is a composite metric combining multiple quality indicators:
-
-```
-SI = 0.35 × Dice + 0.15 × exp(-BCE) + 0.30 × Connectivity + 0.20 × BranchConsistency
-```
-
-| Component | Weight | Purpose | Implementation |
-|-----------|--------|---------|----------------|
-| **Dice** | 35% | Segmentation overlap quality | `2\|pred ∩ truth\| / (\|pred\| + \|truth\|)` |
-| **BCE** | 15% | Confidence calibration | Cross-entropy on predictions |
-| **Connectivity** | 30% | Skeleton continuity | Ratio of skeleton pixels to connected components |
-| **Branch Consistency** | 20% | Topology preservation | Graph branch count vs ground truth |
-
-**Score Interpretation:**
-
-| Score | Level | Color | Action Required |
-|-------|-------|-------|-----------------|
-| 0.80 - 1.00 | Excellent | Green | Routine monitoring |
-| 0.60 - 0.80 | Good | Light Green | Periodic inspection |
-| 0.40 - 0.60 | Moderate | Yellow | Schedule maintenance |
-| 0.20 - 0.40 | Poor | Orange | Immediate inspection |
-| 0.00 - 0.20 | Critical | Red | Urgent structural assessment |
-
-## What the Code Does
-
-### Module-by-Module Breakdown
-
-#### 1. Data Pipeline (`data/dataset.py`)
-
-**Purpose**: Load, transform, and batch crack segmentation datasets.
-
-**Key Components**:
-- `CrackDataset` class: PyTorch Dataset for image/mask pairs
-- Augmentations using Albumentations:
-  - Random flips, rotations, elastic transforms
-  - Brightness/contrast adjustments
-  - GaussNoise for robustness
-- Automatic train/val/test splitting (70/15/15)
-- Image normalization: mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-
-**Code Flow**:
-```python
-Dataset Loading
-    ↓
-Albumentations Transform
-    ↓
-ToTensor + Normalize
-    ↓
-DataLoader (batching)
-```
-
 ---
-
-#### 2. Model Architecture (`models/hybrid_segformer_unet.py`)
-
-**Purpose**: Define the hybrid CNN+Transformer segmentation model.
-
-**Classes**:
-
-**`HybridSegformerUNet`** (lines 87-145):
-- **Initialization**: Creates dual-branch encoder (ResNet + SegFormer)
-- **Forward pass**:
-  1. CNN extracts 5 skip features (s0-s4)
-  2. Transformer processes input to feature map (tf)
-  3. Fusion: Concatenate s4 + tf, apply 1×1 conv
-  4. Decoder: 4 upsampling blocks with skip connections
-  5. Output: 1×1 conv + bilinear upsample to input size
-
-**`ResNetEncoder`** (lines 58-85):
-- Wraps torchvision ResNet34/50
-- Returns skip connections at 5 resolutions
-- Pre-trained on ImageNet
-
-**`TransformerBottleneck`** (lines 33-56):
-- Fallback transformer when SegFormer unavailable
-- Uses PyTorch TransformerEncoder
-- Projects to tokens, processes, reshapes back
-
-**`DecoderBlock`** (lines 19-30):
-- Upsamples input to skip connection size
-- Concatenates input + skip
-- Two 3×3 convolutions with BatchNorm and ReLU
-
----
-
-#### 3. Loss Functions (`losses/segmentation_losses.py`)
-
-**Purpose**: Multi-objective training with topology awareness.
-
-**Loss Components**:
-1. **Dice Loss**: Handles class imbalance (cracks are small % of image)
-2. **BCE Loss**: Pixel-wise binary classification
-3. **Topology Loss**: Penalizes broken skeletons
-
-**Combined Loss**:
-```python
-Total Loss = Dice + BCE + λ_topology × TopologyLoss
-```
-
----
-
-#### 4. Training Loop (`training/trainer.py`)
-
-**Purpose**: Orchestrates the training process with modern optimizations.
-
-**Features**:
-- **AdamW optimizer**: Weight decay decoupled from gradients
-- **Cosine Annealing LR**: Smooth learning rate decay
-- **AMP (Automatic Mixed Precision)**: FP16 training for speed
-- **Early Stopping**: Prevents overfitting (patience=12)
-- **Checkpointing**: Saves best model by validation IoU
-
-**Training Step**:
-```python
-1. Load batch (images, masks)
-2. Forward pass → predictions
-3. Compute multi-loss (Dice + BCE + Topology)
-4. Backward pass with gradient scaling (AMP)
-5. Optimizer step
-6. Update learning rate (cosine schedule)
-7. Log metrics (IoU, Dice, Loss)
-```
-
----
-
-#### 5. Skeletonization (`topology/skeleton.py`)
-
-**Purpose**: Convert binary masks to 1-pixel wide skeletons.
-
-**Algorithm**: Zhang-Suen thinning algorithm (scikit-image)
-
-**Connectivity Scoring**:
-```python
-connectivity_score = num_skeleton_pixels / num_connected_components
-```
-- High score (>0.8): Well-connected crack
-- Low score (<0.5): Fragmented/broken crack
-
-**Output**: Binary image where white pixels = crack centerline
-
----
-
-#### 6. Graph Conversion (`graph/crack_graph.py`)
-
-**Purpose**: Convert skeleton to NetworkX graph for topological analysis.
-
-**Process**:
-```
-Skeleton (numpy array)
-    ↓
-Find intersection points (degree ≥ 3)
-Find endpoints (degree = 1)
-    ↓
-Split skeleton at keypoints
-    ↓
-Create nodes (keypoints) + edges (paths between them)
-    ↓
-NetworkX Graph with edge weights (pixel distances)
-```
-
-**Key Functions**:
-- `skeleton_to_graph()`: Main conversion function
-- `keypoints_from_graph()`: Identify endpoints and junctions
-- `graph_diameter_safe()`: Longest shortest path (crack extent)
-- `graph_longest_path_length()`: Maximum path length
-
----
-
-#### 7. Feature Extraction (`features/structural_features.py`)
-
-**Purpose**: Extract quantitative crack characteristics from graph.
-
-**Extracted Features**:
-
-| Feature | Description | Use Case |
-|---------|-------------|----------|
-| `total_crack_length` | Sum of all edge weights | Overall damage extent |
-| `num_branches` | Count of topological branches | Complexity assessment |
-| `longest_path` | Maximum path length in graph | Critical crack length |
-| `graph_diameter` | Longest shortest path | Spatial extent |
-| `mean_node_degree` | Average connections per node | Connectivity density |
-| `endpoints` | Degree-1 nodes | Crack tips |
-| `junctions` | Degree-3+ nodes | Branch points |
-
-**Branch Counting Algorithm** (`count_branches_from_graph`):
-Traverses graph from endpoints, counting unique paths between keypoints.
-
----
-
-#### 8. Metrics (`utils/metrics.py`)
-
-**Purpose**: Evaluation metrics and SI Score calculation.
-
-**Functions**:
-- `compute_iou()`: Intersection over Union
-- `compute_dice()`: Dice coefficient (F1 score)
-- `compute_precision_recall()`: Classification metrics
-- `structural_integrity_score()`: Composite SI score
-
----
-
-#### 9. API Server (`api/main.py`)
-
-**Purpose**: Production-ready FastAPI inference service.
-
-**Architecture**:
-
-**`InferenceService` class** (lines 75-184):
-- **Lifecycle**: Load model at startup, cache in memory
-- **Methods**:
-  - `_preprocess()`: BGR → RGB → Resize → Normalize → Tensor
-  - `_predict()`: Forward pass with sigmoid + threshold
-  - `_encode_png()`: NumPy → PNG → Base64
-  - `infer()`: Full pipeline (preprocess → predict → skeleton → graph → features → SI)
-
-**Endpoints**:
-
-| Endpoint | Handler | Description |
-|----------|---------|-------------|
-| `/health` | `health()` | Model loaded check |
-| `/ready` | `ready()` | Kubernetes probe |
-| `/metrics` | `metrics()` | Prometheus metrics |
-| `/predict` | `predict()` | Single image inference |
-| `/predict_batch` | `predict_batch()` | Batch inference |
-
-**Middleware**:
-- **LoggingMiddleware**: Request ID assignment + latency logging
-- **RateLimiter**: 10/min for single, 5/min for batch
-- **Auth**: Bearer token verification (skip in dev mode)
-
-**Error Handling**:
-- 400: Invalid file type/size
-- 401: Authentication failed
-- 413: File too large (>10MB)
-- 503: Service unavailable (model not loaded)
-
----
-
-#### 10. Streamlit UI (`ui/streamlit_app.py`)
-
-**Purpose**: Interactive web interface for visual analysis.
-
-**Components**:
-
-**`AnalysisResult` dataclass** (lines 96-108):
-- Structured container for API response data
-- Includes request_id, scores, images, features
-
-**UI Sections**:
-1. **Header**: Title + description
-2. **Sidebar**: Settings (API URL, API key, analysis options)
-3. **Upload**: Drag-and-drop image upload
-4. **Preview**: Original image display
-5. **Analysis Button**: Triggers API call
-6. **Results**:
-   - SI Score gauge chart (Plotly)
-   - Metric cards (connectivity, latency, etc.)
-   - Visual comparison (original/overlay/skeleton)
-   - Feature grid (7 structural metrics)
-   - Download buttons (mask, skeleton, JSON)
-7. **History**: Previous analyses table
-
-**Key Functions**:
-- `call_predict_api()`: HTTP POST to FastAPI
-- `check_api_health()`: Verify backend status
-- `create_gauge_chart()`: Plotly gauge visualization
-- `overlay_mask_on_image()`: Blend mask with original
-- `get_severity_level()`: Color coding based on SI score
-
-**Design**:
-- Gradient background (purple/blue)
-- Glass-morphism cards
-- Responsive layout
-- Progress indicators during analysis
-
----
-
-#### 11. Scripts
-
-**`scripts/train.py`**:
-- CLI entry point for training
-- Args: `--config`, `--model`, `--resume`
-- Saves checkpoints to `checkpoints/`
-
-**`scripts/infer.py`**:
-- CLI inference on single image or directory
-- Outputs: mask.npy, skeleton.npy, visualization.png
-- Supports CPU/GPU inference
-
-**`scripts/export_model.py`**:
-- Exports trained model to production formats
-- TorchScript: For PyTorch runtime
-- ONNX: For cross-platform deployment
-
-**`scripts/benchmark_models.py`**:
-- Compares all model architectures
-- Outputs JSON with metrics per model
-
-**`scripts/eval_onnx.py`**:
-- Runs inference using ONNX Runtime
-- Validates exported model accuracy
-
----
-
-#### 12. Configuration (`utils/config.py`, `configs/config.yaml`)
-
-**Purpose**: Centralized, reproducible configuration.
-
-**Structure**:
-```yaml
-project:      # Name, seed
-data:         # Paths, splits, image_size
-training:     # Hyperparameters, AMP, early stopping
-model:        # Architecture details
-inference:    # Threshold, TTA settings
-si_score:     # Metric weights
-```
-
-**Benefits**:
-- Single source of truth
-- Version controlled
-- Easy A/B testing (swap config files)
-- No hardcoded parameters
-
----
-
-### Data Flow Summary
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         TRAINING PHASE                          │
-├─────────────────────────────────────────────────────────────────┤
-│ Raw Images → Dataset → Augmentations → DataLoader → Model      │
-│                                              ↓                  │
-│                                         Forward Pass            │
-│                                              ↓                  │
-│         Predictions ──────┬───────→ Ground Truth               │
-│              ↓              │              ↓                    │
-│         Multi-Loss ←──────┘          Compute Metrics           │
-│              ↓                                                  │
-│         Backward Pass → Optimizer Step → Checkpoint             │
-└─────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────┐
-│                        INFERENCE PHASE                          │
-├─────────────────────────────────────────────────────────────────┤
-│ Input Image → Preprocess → Model → Sigmoid → Threshold → Mask   │
-│                                                              ↓  │
-│                                                        Skeleton │
-│                                                              ↓  │
-│                                                    Graph (NetworkX)
-│                                                              ↓  │
-│                                                    Features      │
-│                                                              ↓  │
-│                                                    SI Score      │
-└─────────────────────────────────────────────────────────────────┘
-```
 
 ## API Reference
 
-### Endpoints
+### Authentication
 
-| Endpoint | Method | Description | Rate Limit |
-|----------|--------|-------------|------------|
-| `/health` | GET | Service health check | None |
-| `/ready` | GET | Kubernetes readiness probe | None |
-| `/metrics` | GET | Prometheus metrics | None |
-| `/predict` | POST | Single image prediction | 10/min |
-| `/predict_batch` | POST | Batch prediction (max 10) | 5/min |
+In **development mode** (default `API_KEY=dev-key-change-in-production`), no authentication header is required.
 
-### Request/Response Examples
+In **production**, set a secure `API_KEY` in `.env` and include it in every request:
 
-**POST /predict Request:**
 ```bash
-curl -X POST "http://localhost:8000/predict" \
-  -F "image=@crack.jpg" \
-  -H "Authorization: Bearer your-api-key"
+curl -H "Authorization: Bearer <your-api-key>" ...
 ```
 
-**Response:**
+### Endpoints
+
+| Method | Endpoint | Description | Rate Limit | Auth |
+|---|---|---|---|---|
+| `GET` | `/health` | Service health check | None | No |
+| `GET` | `/ready` | Kubernetes readiness probe | None | No |
+| `GET` | `/metrics` | Prometheus metrics | None | No |
+| `GET` | `/docs` | Swagger UI | None | No |
+| `POST` | `/predict` | Single-image crack analysis | 10 / min | Yes |
+| `POST` | `/predict_batch` | Batch analysis (max 10 images) | 5 / min | Yes |
+
+**Constraints:**
+- Accepted formats: `image/jpeg`, `image/png`
+- Maximum file size: 10 MB per image
+- Inference timeout: 30 seconds per image
+
+### Single Image — cURL
+
+```bash
+curl -X POST http://localhost:8000/predict \
+  -H "Authorization: Bearer your-api-key" \
+  -F "image=@/path/to/crack.jpg"
+```
+
+### Batch — cURL
+
+```bash
+curl -X POST http://localhost:8000/predict_batch \
+  -H "Authorization: Bearer your-api-key" \
+  -F "images=@crack1.jpg" \
+  -F "images=@crack2.jpg"
+```
+
+### Python Client
+
+```python
+import requests
+
+with open("crack.jpg", "rb") as f:
+    response = requests.post(
+        "http://localhost:8000/predict",
+        headers={"Authorization": "Bearer your-api-key"},
+        files={"image": ("crack.jpg", f, "image/jpeg")},
+    )
+
+result = response.json()
+print(f"SI Score : {result['si_score']}")
+print(f"Risk     : {result['damage_metrics']['risk_level']}")
+print(f"Latency  : {result['latency_seconds']}s")
+```
+
+### Response Schema
+
 ```json
 {
   "request_id": "a1b2c3d4",
-  "segmentation_mask_png_b64": "iVBORw0KGgo...",
-  "skeleton_png_b64": "iVBORw0KGgo...",
+  "si_score": 0.742,
+  "connectivity_score": 0.891,
+  "segmentation_mask_png_b64": "<base64-encoded PNG>",
+  "raw_mask_png_b64": "<base64-encoded PNG>",
+  "skeleton_png_b64": "<base64-encoded PNG>",
+  "keypoints_overlay_png_b64": "<base64-encoded PNG>",
   "graph_features": {
-    "total_crack_length": 1250.5,
-    "num_branches": 8,
-    "longest_path": 420.3,
-    "graph_diameter": 385.2,
-    "mean_node_degree": 2.1,
-    "endpoints": 6,
-    "junctions": 4
+    "total_crack_length": 312.5,
+    "num_branches": 4.0,
+    "longest_path": 187.3,
+    "graph_diameter": 12.0,
+    "mean_node_degree": 1.94,
+    "node_degree_distribution": [0, 142, 156, 14],
+    "endpoints": 8.0,
+    "junctions": 3.0
   },
-  "connectivity_score": 0.82,
-  "si_score": 0.78,
-  "latency_seconds": 0.45
+  "damage_metrics": {
+    "density_damage": 0.18,
+    "network_damage": 0.12,
+    "complexity_damage": 0.21,
+    "width_damage": 0.09,
+    "total_damage": 0.258,
+    "risk_level": "Moderate"
+  },
+  "post_processing": {
+    "raw_pixels": 1842,
+    "filtered_pixels": 47,
+    "final_pixels": 1795,
+    "filtering_applied": true
+  },
+  "latency_seconds": 0.412
 }
 ```
 
-## Monitoring & Metrics
+Decode a PNG overlay in Python:
 
-### Prometheus Metrics
+```python
+import base64, cv2, numpy as np
 
-Available at `http://localhost:8000/metrics`:
-
-- `predictions_total` - Total predictions by status (success/error)
-- `prediction_latency_seconds` - Latency histogram
-- `batch_size` - Batch size distribution
-
-### Grafana Dashboard
-
-Access at `http://localhost:3000` (admin/admin by default)
-
-Pre-configured dashboards:
-- Prediction throughput
-- Latency trends
-- Error rates
-- GPU utilization
-
-### Health Checks
-
-```bash
-# Liveness
-curl http://localhost:8000/health
-
-# Readiness (K8s)
-curl http://localhost:8000/ready
-
-# Metrics
-curl http://localhost:8000/metrics
+png_bytes = base64.b64decode(result["keypoints_overlay_png_b64"])
+img = cv2.imdecode(np.frombuffer(png_bytes, np.uint8), cv2.IMREAD_COLOR)
+cv2.imwrite("overlay.png", img)
 ```
 
-## Development
+---
 
-### Running Tests
+## Training
+
+### Dataset
+
+The model is trained on a combined dataset of **11 298 paired image/mask samples**:
+
+- **CFD** (Crack Forest Dataset) — concrete surface cracks
+- **CRACK500** — pavement crack images at multiple scales
+
+Dataset layout expected by the trainer:
+
+```
+crack_segmentation_dataset/
+├── images/   ← RGB images (.jpg)
+└── masks/    ← Binary masks (.jpg, white = crack)
+```
+
+The dataset is split automatically: 70% train / 15% val / 15% test (stratified, seed 42).
+
+**Augmentations (training only):**
+- Horizontal and vertical flip (p=0.5 each)
+- Elastic transform (α=50, σ=6, p=0.25)
+- Random brightness/contrast (p=0.4)
+- Gaussian noise (p=0.2)
+- Resize to 256×256 + ImageNet normalisation
+
+### Train a Model
+
+```bash
+# Train the hybrid model (default)
+python scripts/train.py --config configs/config.yaml --model hybrid
+
+# Train baseline models
+python scripts/train.py --model unetpp
+python scripts/train.py --model deeplabv3plus
+python scripts/train.py --model segformer
+```
+
+Training features:
+- **Optimiser:** AdamW (lr=2e-4, weight_decay=1e-4)
+- **Scheduler:** CosineAnnealingLR
+- **Loss:** Dice + BCE + 0.2 × TopologyAwareLoss
+- **Mixed precision:** AMP (automatic mixed precision)
+- **Early stopping:** patience=12 epochs on validation Dice
+- Best checkpoint saved to `checkpoints/best_hybrid_segformer.pth`
+
+### Baseline Comparison
+
+```bash
+python scripts/benchmark_models.py --config configs/config.yaml --checkpoints-dir checkpoints
+```
+
+Outputs a table of IoU, Dice, Precision, Recall, BCE, and Connectivity for all available checkpoints.
+
+### Export Model
+
+```bash
+# Export to ONNX (opset 18) and TorchScript
+python scripts/export_model.py \
+  --weights checkpoints/best_hybrid_segformer.pth \
+  --onnx-out checkpoints/hybrid_segformer.onnx \
+  --ts-out checkpoints/hybrid_segformer.ts
+
+# Evaluate ONNX model
+python scripts/eval_onnx.py --onnx checkpoints/hybrid_segformer.onnx
+```
+
+### CLI Inference
+
+```bash
+# Basic inference
+python scripts/infer.py \
+  --weights checkpoints/best_hybrid_segformer.pth \
+  --image path/to/crack.jpg \
+  --output-dir outputs/
+
+# With ground-truth mask (computes real Dice/BCE)
+python scripts/infer.py \
+  --weights checkpoints/best_hybrid_segformer.pth \
+  --image path/to/crack.jpg \
+  --gt-mask path/to/mask.jpg \
+  --output-dir outputs/ \
+  --visualize
+```
+
+The `--visualize` flag generates a multi-panel figure: Input | GT Mask | Pred Mask | Skeleton | Grad-CAM | Graph Overlay.
+
+---
+
+## Web UI
+
+A lightweight single-page application is included in `ui/`:
+
+- **Drag-and-drop** image upload (PNG/JPG, max 10 MB)
+- **Live API status** indicator
+- **Animated SI gauge** with colour-coded risk badge
+- **Damage breakdown** bar chart (density, network, complexity, width)
+- **Four visualisation panels:** original, segmentation mask, skeleton, keypoints overlay
+- **Compare mode** — side-by-side selector for any two outputs
+- **Export** — download JSON report, segmentation mask, or keypoints overlay
+
+To use the UI, open `ui/index.html` in a browser while the API is running on `http://localhost:8000`. The API URL can be changed in `app.js`.
+
+---
+
+## Database
+
+CrackGraphAI optionally persists all predictions to PostgreSQL.
+
+```bash
+# Start the database
+docker-compose -f docker-compose.db.yml up -d
+
+# Initialise schema
+python db/init_db.py
+```
+
+The database layer uses SQLAlchemy with a `QueuePool` (pool_size=10, max_overflow=20). Configure via environment variables:
+
+```
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/crackgraphai
+DB_POOL_SIZE=10
+DB_MAX_OVERFLOW=20
+DB_POOL_RECYCLE=3600
+```
+
+---
+
+## Monitoring
+
+The production stack ships with full observability out of the box.
+
+### Prometheus Metrics (`:8000/metrics`)
+
+| Metric | Type | Description |
+|---|---|---|
+| `predictions_total` | Counter | Total predictions, labelled by `status` (success/error) |
+| `prediction_latency_seconds` | Histogram | End-to-end inference latency |
+| `batch_size` | Histogram | Batch size distribution |
+
+### Starting the Monitoring Stack
+
+```bash
+docker-compose -f docker-compose.prod.yml up -d prometheus grafana node-exporter
+```
+
+| Service | URL | Default Credentials |
+|---|---|---|
+| Grafana | http://localhost:3000 | admin / admin |
+| Prometheus | http://localhost:9090 | — |
+| API Metrics | http://localhost:8000/metrics | — |
+
+Grafana dashboards and Prometheus datasource are provisioned automatically from `monitoring/grafana/`.
+
+---
+
+## Production Deployment
+
+### Environment Variables
+
+Copy `.env.example` to `.env` and set all values before deploying:
+
+```bash
+cp .env.example .env
+```
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `API_KEY` | **Yes** | `dev-key-change-in-production` | Bearer token for API auth |
+| `HOST` | No | `0.0.0.0` | Bind address |
+| `PORT` | No | `8000` | Bind port |
+| `CONFIG_PATH` | No | `configs/config.yaml` | Config file path |
+| `WEIGHTS_PATH` | No | `checkpoints/best_hybrid_segformer.pth` | Model weights path |
+| `RATE_LIMIT_PER_MINUTE` | No | `10` | Per-IP rate limit for `/predict` |
+| `BATCH_RATE_LIMIT_PER_MINUTE` | No | `5` | Per-IP rate limit for `/predict_batch` |
+| `MAX_FILE_SIZE` | No | `10485760` | Max upload size in bytes (10 MB) |
+| `CUDA_VISIBLE_DEVICES` | No | `0` | GPU device index |
+| `REDIS_URL` | No | — | Redis URL for result caching |
+| `DATABASE_URL` | No | — | PostgreSQL connection string |
+| `ENABLE_METRICS` | No | `true` | Expose Prometheus metrics endpoint |
+| `GRAFANA_PASSWORD` | No | `admin` | Grafana admin password |
+
+### Docker Compose (Full Stack)
+
+```bash
+# Build and start everything
+docker-compose -f docker-compose.prod.yml up -d
+
+# Check all services are healthy
+docker-compose -f docker-compose.prod.yml ps
+
+# View API logs
+docker-compose -f docker-compose.prod.yml logs -f api
+
+# Scale (CPU-only, not recommended for GPU)
+docker-compose -f docker-compose.prod.yml up -d --scale api=2
+```
+
+Services started:
+
+| Container | Port | Description |
+|---|---|---|
+| `crackgraphai-api-prod` | 8000 | FastAPI inference service |
+| `crackgraphai-nginx` | 80, 443 | Reverse proxy + TLS termination |
+| `crackgraphai-prometheus` | 9090 | Metrics collection |
+| `crackgraphai-grafana` | 3000 | Dashboards |
+| `crackgraphai-redis` | 6379 | Result cache |
+| `crackgraphai-node-exporter` | 9100 | System metrics |
+
+### Security Checklist
+
+Before going to production, verify:
+
+- [ ] `API_KEY` changed from the default value
+- [ ] Container runs as non-root user (`appuser`)
+- [ ] HTTPS enabled via Nginx (add SSL certs to `nginx/ssl/` and uncomment the HTTPS block in `nginx/nginx.conf`)
+- [ ] `CORS_ORIGINS` restricted to your frontend domain
+- [ ] Rate limits tuned for your expected traffic
+- [ ] `DB_ECHO=false` (prevents SQL logging in production)
+- [ ] Secrets not committed to the repository (`.env` is in `.gitignore`)
+- [ ] Trivy security scan passing (runs automatically in CI)
+- [ ] Health check responding: `curl http://localhost:8000/health`
+
+---
+
+## CI/CD
+
+GitHub Actions pipeline defined in `.github/workflows/ci-cd.yml`:
+
+| Job | Trigger | Description |
+|---|---|---|
+| `test` | All pushes and PRs | pytest on Python 3.10 + 3.11, ruff lint, mypy type check, coverage upload |
+| `build-docker` | Push to `main`/`develop` | Build and push image to GHCR |
+| `security-scan` | After build | Trivy vulnerability scan, results uploaded to GitHub Security |
+| `deploy-staging` | Push to `develop` | Deploy to staging environment |
+| `deploy-production` | GitHub Release published | Deploy to production environment |
+
+---
+
+## Testing
 
 ```bash
 # Run all tests
 pytest tests/ -v
 
-# Run specific test file
+# With coverage report
+pytest tests/ -v --cov=api --cov=utils --cov=features --cov-report=term-missing
+
+# Run a specific test file
+pytest tests/test_si_scoring.py -v
 pytest tests/test_api.py -v
-
-# With coverage
-pytest tests/ --cov=api --cov-report=html
 ```
 
-### Code Structure
+Test files:
 
-**Adding a new model:**
-1. Create class in `models/your_model.py`
-2. Register in `models/__init__.py`
-3. Add training config in `configs/config.yaml`
-
-**Adding a new feature:**
-1. Implement in `features/`
-2. Update API response model in `api/main.py`
-3. Add UI visualization in `ui/streamlit_app.py`
-
-### Benchmarking
-
-```bash
-# Compare all models
-python scripts/benchmark_models.py \
-    --config configs/config.yaml \
-    --test-dir crack_segmentation_dataset/test \
-    --output results.json
-```
-
-## Troubleshooting
-
-### Common Issues
-
-**"Service unavailable" errors:**
-```bash
-# Check if model is loaded
-curl http://localhost:8000/health
-
-# Verify checkpoint exists
-ls -la checkpoints/best_hybrid_segformer.pth
-```
-
-**High latency:**
-- Enable GPU: `CUDA_VISIBLE_DEVICES=0`
-- Check batch size in config
-- Consider model quantization
-
-**Out of memory:**
-```yaml
-# Reduce batch size in configs/config.yaml
-training:
-  batch_size: 4  # Reduce from 8
-```
-
-**Import errors:**
-```bash
-# Reinstall dependencies
-pip install -r requirements.txt --force-reinstall
-```
-
-### Performance Tuning
-
-**Multi-worker (CPU only):**
-```bash
-uvicorn api.main:app --host 0.0.0.0 --port 8000 --workers 4
-```
-
-**With Gunicorn:**
-```bash
-gunicorn api.main:app -w 1 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
-```
-
-### Security Checklist
-
-Before production deployment:
-
-- [ ] Change default `API_KEY` from `dev-key-change-in-production`
-- [ ] Run as non-root user in container
-- [ ] Enable HTTPS (via reverse proxy)
-- [ ] Configure rate limits appropriately
-- [ ] Set file size limits (10MB default)
-- [ ] Enable input validation
-- [ ] Configure logging
-- [ ] Keep secrets out of code/repo
-
-## Citation
-
-If you use CrackGraphAI in your research, please cite:
-
-```bibtex
-@software{crackgraphai2024,
-  title={CrackGraphAI: Production-Grade Crack Segmentation and Structural Analysis},
-  author={Your Name},
-  year={2024},
-  url={https://github.com/yourusername/CrackGraphAI}
-}
-```
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- SegFormer architecture from [NVIDIA SegFormer](https://github.com/NVlabs/SegFormer)
-- Segmentation Models PyTorch library
-- FastAPI and Streamlit communities
-- NetworkX for graph algorithms
+| File | Coverage |
+|---|---|
+| `tests/test_api.py` | FastAPI endpoints, auth, rate limiting, error handling |
+| `tests/test_metrics.py` | IoU, Dice, precision, recall, BCE computation |
+| `tests/test_si_scoring.py` | SI score components, risk classification, edge cases |
 
 ---
 
-**Support:** For issues and feature requests, please use the [GitHub Issues](https://github.com/yourusername/CrackGraphAI/issues) page.
+## Risk Classification
+
+| SI Score | Risk Level | Recommended Action |
+|---|---|---|
+| ≥ 0.85 | **Low** | Routine monitoring |
+| 0.70 – 0.85 | **Moderate** | Schedule inspection within 6 months |
+| 0.50 – 0.70 | **High** | Professional assessment within 1 month |
+| 0.30 – 0.50 | **Critical** | Immediate intervention advised |
+| < 0.30 | **Failure Imminent** | Evacuate and initiate emergency repairs |
+
+---
+
+## Requirements
+
+Core dependencies (pinned versions in `requirements.txt`):
+
+| Package | Version | Purpose |
+|---|---|---|
+| `torch` | 2.4.0 | Deep learning framework |
+| `torchvision` | 0.19.0 | Image utilities |
+| `timm` | 1.0.8 | SegFormer (MiT-B0) backbone |
+| `segmentation-models-pytorch` | 0.3.3 | Baseline model builders |
+| `opencv-python-headless` | 4.10.0.84 | Image I/O and processing |
+| `albumentations` | 1.4.14 | Training augmentations |
+| `scikit-image` | 0.24.0 | Skeletonisation |
+| `networkx` | 3.3 | Crack graph construction |
+| `fastapi` | 0.112.0 | REST API framework |
+| `uvicorn` | 0.30.5 | ASGI server |
+| `slowapi` | 0.1.9 | Rate limiting |
+| `prometheus-client` | 0.20.0 | Metrics exposition |
+| `onnx` / `onnxruntime-gpu` | 1.16.2 / 1.18.1 | Model export and runtime |
+| `redis` | 5.0.8 | Result caching |
+| `sqlalchemy` / `asyncpg` | — | Database ORM and async driver |
+| `streamlit` | 1.37.1 | Optional Streamlit UI |
+
+**Python:** 3.10 or 3.11  
+**CUDA:** 12.1 (for GPU inference)  
+**Docker:** 24+ with NVIDIA Container Toolkit for GPU passthrough
+
+---
+
+## Contributing
+
+1. Fork the repository and create a feature branch from `develop`
+2. Install dev dependencies: `pip install ruff mypy black`
+3. Run linting before committing: `ruff check . --ignore E501`
+4. Ensure all tests pass: `pytest tests/ -v`
+5. Open a pull request against `develop` — CI will run automatically
+
+---
+
+

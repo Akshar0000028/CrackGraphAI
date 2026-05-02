@@ -38,32 +38,109 @@ def skeleton_to_graph(skeleton: np.ndarray) -> nx.Graph:
     return graph
 
 
-def keypoints_from_graph(graph: nx.Graph) -> Dict[str, int]:
-    degrees = dict(graph.degree())
-    endpoints = sum(1 for _, d in degrees.items() if d == 1)
-    junctions = sum(1 for _, d in degrees.items() if d >= 3)
-    return {"endpoints": endpoints, "junctions": junctions}
+def _cluster_pixels(
+    pixels: List[Tuple[int, int]],
+    merge_radius: int = 4,
+) -> List[Tuple[int, int]]:
+    """Merge spatially close pixels into single representative points.
+
+    Because the skeleton graph is built with 8-connectivity, a single
+    physical junction or endpoint in the image typically produces a tight
+    cluster of 2–6 adjacent pixels that all satisfy the degree criterion.
+    Counting them individually inflates the reported numbers and clutters
+    the overlay with overlapping circles.
+
+    This function groups pixels whose Chebyshev distance is ≤ merge_radius
+    and returns the centroid of each group, giving one marker per real
+    topological event.
+
+    Parameters
+    ----------
+    pixels       : List of (y, x) integer pixel coordinates.
+    merge_radius : Maximum Chebyshev distance to merge two pixels.
+
+    Returns
+    -------
+    List of (y, x) centroid coordinates, one per cluster.
+    """
+    if not pixels:
+        return []
+
+    arr = np.array(pixels, dtype=np.int32)   # shape (N, 2)
+    visited = np.zeros(len(arr), dtype=bool)
+    centroids: List[Tuple[int, int]] = []
+
+    for i in range(len(arr)):
+        if visited[i]:
+            continue
+        # Chebyshev distance: max(|dy|, |dx|)
+        diff = np.abs(arr - arr[i])                  # (N, 2)
+        cheb = np.max(diff, axis=1)                  # (N,)
+        cluster_mask = cheb <= merge_radius
+        visited[cluster_mask] = True
+        cy = int(np.round(arr[cluster_mask, 0].mean()))
+        cx = int(np.round(arr[cluster_mask, 1].mean()))
+        centroids.append((cy, cx))
+
+    return centroids
 
 
-def get_keypoint_coords(graph: nx.Graph) -> Dict[str, List[Tuple[int, int]]]:
-    """Return the (y, x) coordinates of endpoints and junctions in the graph.
+def get_keypoint_coords(
+    graph: nx.Graph,
+    merge_radius: int = 4,
+) -> Dict[str, List[Tuple[int, int]]]:
+    """Return one (y, x) coordinate per topological endpoint and junction.
 
     Endpoints  – nodes with degree == 1 (crack tips / terminations).
     Junctions  – nodes with degree >= 3 (branching / intersection points).
 
+    Adjacent pixels that satisfy the same criterion are merged into a single
+    representative centroid so that the count and the overlay markers match
+    the true number of topological events rather than the number of pixels.
+
+    Parameters
+    ----------
+    graph        : NetworkX graph built from the skeleton.
+    merge_radius : Chebyshev-distance threshold for merging nearby pixels.
+
     Returns
     -------
     dict with keys ``"endpoints"`` and ``"junctions"``, each a list of
-    ``(y, x)`` integer tuples.
+    ``(y, x)`` integer tuples (one per cluster).
     """
-    endpoints: List[Tuple[int, int]] = []
-    junctions: List[Tuple[int, int]] = []
+    raw_endpoints: List[Tuple[int, int]] = []
+    raw_junctions: List[Tuple[int, int]] = []
     for node, degree in graph.degree():
         if degree == 1:
-            endpoints.append(node)
+            raw_endpoints.append(node)
         elif degree >= 3:
-            junctions.append(node)
-    return {"endpoints": endpoints, "junctions": junctions}
+            raw_junctions.append(node)
+
+    return {
+        "endpoints": _cluster_pixels(raw_endpoints, merge_radius),
+        "junctions": _cluster_pixels(raw_junctions, merge_radius),
+    }
+
+
+def keypoints_from_graph(
+    graph: nx.Graph,
+    merge_radius: int = 4,
+) -> Dict[str, int]:
+    """Return the *count* of topological endpoints and junctions.
+
+    Uses the same clustering as :func:`get_keypoint_coords` so that the
+    reported numbers always match what is drawn on the overlay image.
+
+    Parameters
+    ----------
+    graph        : NetworkX graph built from the skeleton.
+    merge_radius : Chebyshev-distance threshold for merging nearby pixels.
+    """
+    coords = get_keypoint_coords(graph, merge_radius)
+    return {
+        "endpoints": len(coords["endpoints"]),
+        "junctions": len(coords["junctions"]),
+    }
 
 
 def draw_keypoints_overlay(
