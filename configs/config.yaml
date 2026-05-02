@@ -1,0 +1,44 @@
+project:
+  name: crackgraphai
+  seed: 42
+
+data:
+  root_dir: crack_segmentation_dataset
+  image_dir_name: images
+  mask_dir_name: masks
+  image_size: 256
+  train_ratio: 0.70
+  val_ratio: 0.15
+  test_ratio: 0.15
+  num_workers: 4
+
+training:
+  batch_size: 8
+  epochs: 80
+  lr: 0.0002
+  weight_decay: 0.0001
+  amp: true
+  early_stopping_patience: 12
+  checkpoint_dir: checkpoints
+  best_model_name: best_hybrid_segformer.pth
+  lambda_topology: 0.2
+
+model:
+  architecture: hybrid_segformer_unet
+  cnn_backbone: resnet34
+  transformer_backbone: mit_b0
+  in_channels: 3
+  classes: 1
+  decoder_channels: [256, 128, 64, 32]
+
+inference:
+  threshold: 0.35
+  use_tta: true
+  tta_transforms: [none, hflip, vflip]
+
+si_score:
+  weights:
+    dice: 0.35
+    bce: 0.15
+    connectivity: 0.30
+    branch_consistency: 0.20

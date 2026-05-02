@@ -1,0 +1,84 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+!main-may\ copy.ipynb
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Model checkpoints (large files)
+checkpoints/*.pth
+checkpoints/*.onnx
+checkpoints/*.ts
+checkpoints/*.data
+
+# Outputs
+outputs/*/
+outputs/*.png
+outputs/*.npy
+
+# Data
+crack_segmentation_dataset/images/*
+crack_segmentation_dataset/masks/*
+crack_segmentation_dataset/test/*
+crack_segmentation_dataset/train/*
+
+# Logs
+*.log
+logs/
+
+# Coverage
+.coverage
+htmlcov/
+coverage.xml
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Strange artifact folders
+float\(np.mean\(ds\)\)/
+mean_dice/
+print\(f'th/

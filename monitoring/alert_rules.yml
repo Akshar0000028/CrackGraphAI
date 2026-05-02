@@ -1,0 +1,62 @@
+groups:
+  - name: crackgraphai
+    rules:
+      # High error rate
+      - alert: HighErrorRate
+        expr: rate(predictions_total{status="error"}[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value }} errors per second"
+
+      # High latency
+      - alert: HighLatency
+        expr: histogram_quantile(0.95, rate(prediction_latency_seconds_bucket[5m])) > 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High prediction latency"
+          description: "95th percentile latency is {{ $value }}s"
+
+      # Service down
+      - alert: ServiceDown
+        expr: up{job="crackgraphai-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CrackGraphAI API is down"
+          description: "API has been down for more than 1 minute"
+
+      # Model not loaded
+      - alert: ModelNotLoaded
+        expr: model_loaded == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Model not loaded"
+          description: "Model failed to load or is not available"
+
+      # Circuit breaker open
+      - alert: CircuitBreakerOpen
+        expr: rate(predictions_total{status="error"}[1m]) > 0.5
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Circuit breaker may be open"
+          description: "High failure rate detected, circuit breaker may have opened"
+
+      # GPU memory usage (if using GPU)
+      - alert: HighGPUMemory
+        expr: nvidia_gpu_memory_used_bytes / nvidia_gpu_memory_total_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU memory usage high"
+          description: "GPU memory usage is above 90%"

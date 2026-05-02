@@ -1,0 +1,154 @@
+version: "3.8"
+
+services:
+  # Main API service with stable inference
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+      args:
+        - MODEL_URL=${MODEL_URL:-}
+    container_name: crackgraphai-api-prod
+    ports:
+      - "8000:8000"
+    environment:
+      # Core settings
+      - API_KEY=${API_KEY:-change-me-in-production}
+      - CONFIG_PATH=configs/config.yaml
+      - WEIGHTS_PATH=checkpoints/best_hybrid_segformer.pth
+      - LOG_LEVEL=INFO
+      
+      # Inference stability settings
+      - USE_TTA=true
+      - CACHE_TTL=3600
+      - ENABLE_UNCERTAINTY=true
+      - MORPHOLOGY_KERNEL_SIZE=3
+      - MIN_COMPONENT_SIZE=16
+      
+      # Performance settings
+      - CUDA_VISIBLE_DEVICES=0
+      - WORKERS=1
+      - MIXED_PRECISION=true
+      
+      # CORS settings
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      
+    volumes:
+      - ./checkpoints:/app/checkpoints:ro
+      - ./configs:/app/configs:ro
+      - model-cache:/app/.cache
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    restart: unless-stopped
+    networks:
+      - crackgraphai
+
+  # Load balancer / reverse proxy
+  nginx:
+    image: nginx:alpine
+    container_name: crackgraphai-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - api
+    restart: unless-stopped
+    networks:
+      - crackgraphai
+
+  # Prometheus monitoring
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    container_name: crackgraphai-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    networks:
+      - crackgraphai
+
+  # Grafana dashboards
+  grafana:
+    image: grafana/grafana:10.0.0
+    container_name: crackgraphai-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://localhost:3000}
+    volumes:
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    networks:
+      - crackgraphai
+
+  # Redis for distributed caching
+  redis:
+    image: redis:7-alpine
+    container_name: crackgraphai-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    networks:
+      - crackgraphai
+
+  # Node Exporter for system metrics
+  node-exporter:
+    image: prom/node-exporter:v1.6.0
+    container_name: crackgraphai-node-exporter
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    restart: unless-stopped
+    networks:
+      - crackgraphai
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  redis-data:
+  model-cache:
+
+networks:
+  crackgraphai:
+    driver: bridge
