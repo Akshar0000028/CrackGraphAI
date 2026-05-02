@@ -447,7 +447,7 @@ if analyze_clicked:
             # --- VISUALIZATIONS ---
             st.markdown('<div class="section-header">🎨 AI Visualizations</div>', unsafe_allow_html=True)
             
-            vis_col1, vis_col2, vis_col3 = st.columns(3)
+            vis_col1, vis_col2, vis_col3, vis_col4 = st.columns(4)
             
             with vis_col1:
                 st.markdown('<div class="image-container">', unsafe_allow_html=True)
@@ -470,6 +470,22 @@ if analyze_clicked:
                     st.markdown('<div class="image-label">🦴 Structural Skeleton</div>', unsafe_allow_html=True)
                     st.image(skel_img, use_container_width=True)
                     st.markdown('</div>', unsafe_allow_html=True)
+
+            with vis_col4:
+                kp_b64 = result.get("keypoints_overlay_png_b64")
+                if kp_b64:
+                    kp_img = b64_to_pil(kp_b64)
+                    if kp_img:
+                        st.markdown('<div class="image-container">', unsafe_allow_html=True)
+                        st.markdown('<div class="image-label">📍 Endpoints & Junctions</div>', unsafe_allow_html=True)
+                        st.image(kp_img, use_container_width=True)
+                        st.markdown(
+                            '<div style="font-size:0.75rem; color:#64748b; text-align:center; margin-top:0.5rem;">'
+                            '🔴 Endpoints &nbsp;|&nbsp; 🟡 Junctions'
+                            '</div>',
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown('</div>', unsafe_allow_html=True)
             
             # --- DOWNLOAD & INFO ---
             st.markdown('<div class="section-header">💾 Export & Details</div>', unsafe_allow_html=True)

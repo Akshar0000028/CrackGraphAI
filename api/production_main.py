@@ -48,7 +48,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from inference.engine import StableInferenceEngine, InferenceConfig
 from inference.cache import ResultCache
 from features.structural_features import extract_structural_features
-from graph.crack_graph import skeleton_to_graph
+from graph.crack_graph import skeleton_to_graph, draw_keypoints_overlay
 from models.hybrid_segformer_unet import HybridSegformerUNet
 from topology.skeleton import connectivity_score, mask_to_skeleton
 from utils.config import load_config
@@ -359,6 +359,15 @@ class ProductionInferenceService:
         if not ok:
             raise RuntimeError("Failed to encode PNG")
         return base64.b64encode(buf.tobytes()).decode("utf-8")
+
+    def _encode_color_png(self, arr: np.ndarray) -> str:
+        """Encode a BGR uint8 colour image as a base64-encoded PNG string."""
+        if arr.dtype != np.uint8:
+            arr = (np.clip(arr, 0, 255)).astype(np.uint8)
+        ok, buf = cv2.imencode(".png", arr)
+        if not ok:
+            raise RuntimeError("Failed to encode PNG")
+        return base64.b64encode(buf.tobytes()).decode("utf-8")
     
     async def infer(self, file_bytes: bytes, request_id: str, params: Dict) -> Dict:
         """Run full inference pipeline with stability mechanisms."""
@@ -437,7 +446,17 @@ class ProductionInferenceService:
 
         # STRUCTURAL INTEGRITY = 1 - DAMAGE (invert so high = good structure)
         si = max(0.0, 1.0 - total_damage)
-        
+
+        # ── Keypoints overlay ─────────────────────────────────────────────
+        # Draw endpoints (red) and junctions (yellow) directly on the
+        # skeleton image so the crack topology is clearly visible.
+        # skel is a uint8 binary array (0/1) in the same 256×256 coordinate
+        # space as the graph nodes — no image decoding needed.
+        try:
+            keypoints_overlay = draw_keypoints_overlay(skel, graph)
+        except Exception:
+            keypoints_overlay = None
+
         latency = time.time() - start_time
         
         # Build response
@@ -447,6 +466,7 @@ class ProductionInferenceService:
             "raw_mask_png_b64": self._encode_png(raw_mask),
             "skeleton_png_b64": self._encode_png(skel),
             "probability_map_png_b64": self._encode_png(prob_map),
+            "keypoints_overlay_png_b64": self._encode_color_png(keypoints_overlay) if keypoints_overlay is not None else None,
             "graph_features": feats,
             "connectivity_score": float(conn),
             "si_score": float(si),

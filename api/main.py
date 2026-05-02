@@ -24,7 +24,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from features.structural_features import extract_structural_features
 from features.si_scoring import compute_structural_integrity, classify_risk
-from graph.crack_graph import skeleton_to_graph
+from graph.crack_graph import skeleton_to_graph, draw_keypoints_overlay
 from models.hybrid_segformer_unet import HybridSegformerUNet
 from topology.skeleton import connectivity_score, mask_to_skeleton
 from utils.config import load_config
@@ -291,6 +291,15 @@ class InferenceService:
             raise RuntimeError("PNG encoding failed")
         return base64.b64encode(buf.tobytes()).decode("utf-8")
 
+    def _encode_color_png(self, arr: np.ndarray) -> str:
+        """Encode a BGR uint8 colour image as a base64-encoded PNG string."""
+        if arr.dtype != np.uint8:
+            arr = (np.clip(arr, 0, 255)).astype(np.uint8)
+        ok, buf = cv2.imencode(".png", arr)
+        if not ok:
+            raise RuntimeError("PNG encoding failed")
+        return base64.b64encode(buf.tobytes()).decode("utf-8")
+
     # ------------------------------------------------------------------ #
     # Full inference pipeline
     # ------------------------------------------------------------------ #
@@ -366,11 +375,19 @@ class InferenceService:
             PREDICTION_LATENCY.observe(latency)
             PREDICTION_COUNTER.labels(status="success").inc()
 
+            # ── Keypoints overlay ─────────────────────────────────────────
+            # Draw endpoints (red) and junctions (yellow) directly on the
+            # skeleton image so the crack topology is clearly visible.
+            # skel is a uint8 binary array (0/1) in the model's 256×256 space,
+            # which is the same coordinate space as the graph nodes.
+            keypoints_overlay = draw_keypoints_overlay(skel, graph)
+
             return {
                 "request_id": request_id,
                 "segmentation_mask_png_b64": self._encode_png(mask),
                 "raw_mask_png_b64": self._encode_png(raw_mask),
                 "skeleton_png_b64": self._encode_png(skel),
+                "keypoints_overlay_png_b64": self._encode_color_png(keypoints_overlay),
                 "graph_features": feats,
                 "connectivity_score": round(float(conn), 4),
                 "si_score": round(float(si), 4),
